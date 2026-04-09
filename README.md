@@ -1,4 +1,4 @@
-# G2MoE: Hardware-Aligned Topology-Aware Routing for MoE Models
+# G²MoE: Graph-to-Grid Topology-Aware Routing for Mixture-of-Experts
 
 This repository contains the official implementation of **G2MoE**, a system-level optimization for Mixture-of-Experts (MoE) models. G2MoE aligns expert routing with underlying physical hardware topology (e.g., PCIe/NVLink inter-GPU bandwidth) to minimize communication bottlenecks via a highly decoupled, Adapter-based execution engine.
 
