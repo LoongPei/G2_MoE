@@ -7,17 +7,31 @@ import seaborn as sns
 import networkx as nx
 import matplotlib.patches as patches
 from tqdm import tqdm
+import sys
+from scipy.interpolate import make_interp_spline
+import matplotlib.patches as patches
+
+# 动态添加项目根目录到 sys.path
+# ==========================================
+# 获取当前脚本所在目录 (tools/plot)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# 获取项目根目录 (向上退两级：tools/plot -> tools -> root)
+project_root = os.path.abspath(os.path.join(current_dir, "..", ".."))
+
+# 将项目根目录加入到 Python 的包搜索路径中
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 # ==========================================
 # 1. 全局配置与数据加载
 # ==========================================
-from g2moe.config import RAW_CO_MATRIX_PATH, PMI_MATRIX_PATH, MARKOV_MATRIX_PATH, PLACEMENT_MAP_PATH
+from g2moe.config import RAW_CO_MATRIX_PATH, PMI_MATRIX_PATH, MARKOV_MATRIX_PATH, PLACEMENT_MAP_PATH, FIGURES_DIR, HUB_JSON_PATH
 
 BASE_OUT_DIR = FIGURES_DIR / "motivation_all_layers"
 DIR_FIG1 = BASE_OUT_DIR / "fig1_long_tail"
 DIR_FIG2 = BASE_OUT_DIR / "fig2_pmi_comparison"
-DIR_FIG3 = BASE_OUT_DIR / "fig3_network_islands"
-DIR_FIG4 = BASE_OUT_DIR / "fig4_markov_aggregated"
+DIR_FIG3 = BASE_OUT_DIR / "fig3_markov_aggregated"
+DIR_FIG4 = BASE_OUT_DIR / "fig4_hub_selection"  # 新增 Fig4 目录
 
 for d in [DIR_FIG1, DIR_FIG2, DIR_FIG3, DIR_FIG4]:
     d.mkdir(parents=True, exist_ok=True)
@@ -35,6 +49,9 @@ all_inter_markov = torch.load(MARKOV_MATRIX_PATH, weights_only=True).numpy()
 with open(PLACEMENT_MAP_PATH, "r") as f:
     full_placement_map = json.load(f)
 
+with open(HUB_JSON_PATH, "r", encoding="utf-8") as f:
+    hub_scores_data = json.load(f)
+
 num_layers = len(all_intra_co)
 
 def get_layer_groups(layer_idx):
@@ -45,29 +62,54 @@ def get_layer_groups(layer_idx):
     return hubs, gpu_experts
 
 # ==========================================
-# 📊 构思一: 批量生成所有层的长尾分布图
+# 📊 构思一: 批量生成所有层的长尾分布图 (平滑曲线 + 自适应Y轴 + 高级悬浮标注)
 # ==========================================
 def plot_fig1_long_tail(l):
-    hubs, _ = get_layer_groups(l)
     activation_counts = np.diag(all_intra_co[l])
     sorted_indices = np.argsort(activation_counts)[::-1]
     freqs = activation_counts[sorted_indices] / np.sum(activation_counts) * 100
     
     fig, ax = plt.subplots(figsize=(8, 4))
-    colors = ['#c44e52' if idx in hubs else '#4c72b0' for idx in sorted_indices]
-    ax.bar(range(len(freqs)), freqs, color=colors, edgecolor='black', linewidth=0.3)
+    x_coords = np.arange(len(freqs))
     
-    ax.set_title(f'Expert Activation Frequency - Layer {l}')
-    ax.set_xlabel('Expert Rank')
+    # 1. B-spline 平滑曲线
+    spl = make_interp_spline(x_coords, freqs, k=3)
+    x_smooth = np.linspace(x_coords.min(), x_coords.max(), 300)
+    y_smooth = spl(x_smooth)
+    
+    # 2. 绘制平滑曲线与散点
+    ax.plot(x_smooth, y_smooth, color='#4c72b0', linestyle='-', linewidth=2, zorder=1, alpha=0.9)
+    ax.scatter(x_coords, freqs, color='#4c72b0', s=20, edgecolor='white', linewidth=0.5, zorder=2)
+    
+    # 3. 自适应 Y 轴跨度 (留出上下 15% 的边距)
+    y_min, y_max = min(freqs), max(freqs)
+    y_margin = (y_max - y_min) * 0.15
+    ax.set_ylim(y_min - y_margin, y_max + y_margin)
+    
+    # 填充面积
+    ax.fill_between(x_smooth, y_smooth, y2=y_min - y_margin, color='#4c72b0', alpha=0.1)
+    
+    # 4. 美观的高级���注 (首尾节点)
+    first_val, last_val = freqs[0], freqs[-1]
+    
+    # 画大一号的空心圆圈强调首尾节点
+    ax.scatter([0, len(freqs)-1], [first_val, last_val], facecolor='none', edgecolor='#4c72b0', s=100, linewidth=2, zorder=3)
+    
+    # 设计优雅的悬浮文本框样式
+    bbox_props = dict(boxstyle="round,pad=0.4", fc="white", ec="#4c72b0", lw=1.2, alpha=0.95)
+    
+    # 标注首节点 (稍微往右放一点，避免遮挡 y 轴)
+    ax.text(2, first_val, f"Max: {first_val:.2f}%", ha="left", va="center", 
+            fontsize=10, fontweight='bold', color="#4c72b0", bbox=bbox_props, zorder=4)
+            
+    # 标注尾节点 (稍微往左放一点)
+    ax.text(len(freqs)-3, last_val, f"Min: {last_val:.2f}%", ha="right", va="center", 
+            fontsize=10, fontweight='bold', color="#4c72b0", bbox=bbox_props, zorder=4)
+    
+    ax.set_title(f'Expert Activation Frequency (Long Tail) - Layer {l}')
+    ax.set_xlabel('Expert Rank (Sorted by Frequency)')
     ax.set_ylabel('Activation Share (%)')
     ax.grid(axis='y', linestyle='--', alpha=0.5)
-    
-    import matplotlib.lines as mlines
-    legend_elements = [
-        mlines.Line2D([0], [0], color='#c44e52', lw=6, label='Global Hubs'),
-        mlines.Line2D([0], [0], color='#4c72b0', lw=6, label='Specialized')
-    ]
-    ax.legend(handles=legend_elements, loc='upper right')
     
     plt.tight_layout()
     plt.savefig(os.path.join(DIR_FIG1, f"layer_{l:02d}_tail.pdf"))
@@ -121,92 +163,14 @@ def plot_fig2_pmi_comparison(l):
     plt.close(fig)
 
 # ==========================================
-# 📊 构思三: 彻底重构的物理岛屿与核心拓扑图
+# 📊 构思三: 系统级聚合马尔可夫热力图
 # ==========================================
-def plot_fig3_network_islands(l):
-    hubs, gpu_experts = get_layer_groups(l)
-    pmi = all_intra_pmi[l]
-    activation = np.diag(all_intra_co[l])
-    
-    fig, ax = plt.subplots(figsize=(10, 10))
-    G = nx.Graph()
-    pos = {}; node_colors = []; node_sizes = []
-    
-    # 画布背景岛屿
-    ax.add_patch(patches.Circle((0, 0), 0.5, color='#f0f0f0', zorder=0)) # Hub 核心区
-    quadrants = [(1, 1), (-1, 1), (-1, -1), (1, -1)]
-    gpu_colors = ['#4c72b0', '#55a868', '#8172b3', '#ccb974']
-    for i, (cx, cy) in enumerate(quadrants):
-        ax.add_patch(patches.Circle((cx*1.5, cy*1.5), 0.8, color=gpu_colors[i], alpha=0.1, zorder=0))
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-    # 布置节点
-    max_act = np.max(activation)
-    for i, h in enumerate(hubs):
-        angle = 2 * np.pi * i / len(hubs)
-        pos[h] = (0.3 * np.cos(angle), 0.3 * np.sin(angle))
-        node_colors.append('#c44e52')
-        node_sizes.append(activation[h]/max_act * 600 + 100)
-        G.add_node(h)
-        
-    for g_idx, g_exp in enumerate(gpu_experts):
-        cx, cy = quadrants[g_idx][0] * 1.5, quadrants[g_idx][1] * 1.5
-        for i, exp in enumerate(g_exp):
-            angle = 2 * np.pi * i / len(g_exp)
-            pos[exp] = (cx + 0.5 * np.cos(angle), cy + 0.5 * np.sin(angle))
-            node_colors.append(gpu_colors[g_idx])
-            node_sizes.append(activation[exp]/max_act * 600 + 100)
-            G.add_node(exp)
-
-    # 布置连线 (Top 5%，按通信类型上色)
-    threshold = np.percentile(pmi[pmi > 0], 95)
-    edges_local, edges_hub, edges_remote = [], [], []
-    weights_local, weights_hub, weights_remote = [], [], []
-    
-    for i in range(60):
-        for j in range(i+1, 60):
-            if pmi[i, j] > threshold:
-                w = pmi[i, j] * 2
-                G.add_edge(i, j)
-                if i in hubs or j in hubs:
-                    edges_hub.append((i, j)); weights_hub.append(w)
-                else:
-                    # 检查是否在同一个 GPU
-                    same_gpu = False
-                    for g_exp in gpu_experts:
-                        if i in g_exp and j in g_exp: same_gpu = True; break
-                    if same_gpu:
-                        edges_local.append((i, j)); weights_local.append(w)
-                    else:
-                        edges_remote.append((i, j)); weights_remote.append(w)
-
-    # 分批画线，强制开启 arrows=True 和 arrowstyle='-' 来支持优雅的弧线
-    nx.draw_networkx_edges(G, pos, edgelist=edges_local, width=weights_local, edge_color='#2ca02c', alpha=0.6, arrows=True, arrowstyle='-', connectionstyle="arc3,rad=0.2", ax=ax)
-    nx.draw_networkx_edges(G, pos, edgelist=edges_hub, width=weights_hub, edge_color='#1f77b4', alpha=0.4, arrows=True, arrowstyle='-', connectionstyle="arc3,rad=0.1", ax=ax)
-    nx.draw_networkx_edges(G, pos, edgelist=edges_remote, width=weights_remote, edge_color='#d62728', style='dashed', alpha=0.8, arrows=True, arrowstyle='-', connectionstyle="arc3,rad=0.3", ax=ax)
-    
-    # 画节点 (删除了报错的 zorder 参数，按执行顺序自然覆盖在连线上)
-    nx.draw_networkx_nodes(G, pos, node_size=node_sizes, node_color=node_colors, edgecolors='white', linewidths=1.5, ax=ax)
-    
-    import matplotlib.lines as mlines
-    legend_elements = [
-        mlines.Line2D([0], [0], color='#2ca02c', lw=3, label='Intra-GPU (0 Traffic)'),
-        mlines.Line2D([0], [0], color='#1f77b4', lw=3, label='To Hub (0 Traffic)'),
-        mlines.Line2D([0], [0], color='#d62728', lw=3, ls='--', label='Cross-GPU (Bottleneck)'),
-        mlines.Line2D([0], [0], marker='o', color='w', markerfacecolor='#c44e52', markersize=10, label='Hub Core'),
-        mlines.Line2D([0], [0], marker='o', color='w', markerfacecolor='#8172b3', markersize=10, label='GPU Islands')
-    ]
-    ax.legend(handles=legend_elements, loc='upper right')
-    ax.set_title(f'Hardware-Aligned Routing Islands (Layer {l})')
-    ax.axis('off')
-
-    plt.tight_layout()
-    plt.savefig(os.path.join(DIR_FIG3, f"layer_{l:02d}_islands.pdf"))
-    plt.close(fig)
-
-# ==========================================
-# 📊 构思四: 系统级聚合马尔可夫热力图
-# ==========================================
-def plot_fig4_markov_aggregated(l):
+def plot_fig3_markov_aggregated_physical(l):
     if l >= num_layers - 1: return
     
     src_hubs, src_gpus = get_layer_groups(l)
@@ -216,29 +180,110 @@ def plot_fig4_markov_aggregated(l):
     dst_groups = [dst_hubs] + dst_gpus
     
     markov = all_inter_markov[l]
-    agg_matrix = np.zeros((5, 5))
+    raw_matrix = np.zeros((5, 5))
     
+    # 1. 计算原始 5x5 矩阵
     for i in range(5):
         for j in range(5):
             sub_mat = markov[np.ix_(src_groups[i], dst_groups[j])]
-            agg_matrix[i, j] = np.sum(sub_mat)
+            raw_matrix[i, j] = np.sum(sub_mat)
             
-    # 归一化，使其按行求和为1 (表示流出概率)
-    row_sums = agg_matrix.sum(axis=1, keepdims=True)
-    agg_matrix = np.divide(agg_matrix, row_sums, out=np.zeros_like(agg_matrix), where=row_sums!=0)
+    # 2. 提取基础的纯 GPU 4x4 流量矩阵
+    gpu_matrix = raw_matrix[1:5, 1:5].copy() 
     
-    labels = ["Hubs", "GPU 0", "GPU 1", "GPU 2", "GPU 3"]
-    fig, ax = plt.subplots(figsize=(7, 6))
+    # 提取涉及 Hub 的流量
+    hub_to_hub = raw_matrix[0, 0]
+    gpus_to_hub = raw_matrix[1:5, 0]  # shape: (4,)
+    hub_to_gpus = raw_matrix[0, 1:5]  # shape: (4,)
+    
+    # 计算 Hub 内数据的物理驻留概率权重 (基于有哪些 GPU 正在向 Hub 输出数据)
+    hub_sum = np.sum(gpus_to_hub)
+    w_i = gpus_to_hub / hub_sum if hub_sum > 0 else np.ones(4) / 4
+    
+    # 3. 按物理真值重新分配 Hub 流量
+    for i in range(4):
+        # 途径 1: GPU i -> Hub (物理上停留在本地)
+        gpu_matrix[i, i] += gpus_to_hub[i]
+        
+        # 途径 3: Hub -> Hub (物理上继续停留在各自的本地)
+        gpu_matrix[i, i] += hub_to_hub * w_i[i]
+        
+        for j in range(4):
+            # 途径 2: Hub -> GPU j 
+            # (数据原本以 w_i 的概率驻留在 GPU i 的 Hub 中，现在要传给 GPU j)
+            gpu_matrix[i, j] += hub_to_gpus[j] * w_i[i]
+            
+    # 4. 行归一化计算流出转移概率
+    row_sums = gpu_matrix.sum(axis=1, keepdims=True)
+    agg_matrix = np.divide(gpu_matrix, row_sums, out=np.zeros_like(gpu_matrix), where=row_sums!=0)
+    
+    # 5. 画图
+    labels = ["GPU 0", "GPU 1", "GPU 2", "GPU 3"]
+    fig, ax = plt.subplots(figsize=(6, 5))
     
     sns.heatmap(agg_matrix, cmap="OrRd", annot=True, fmt=".2f", ax=ax, 
                 xticklabels=labels, yticklabels=labels, cbar_kws={'label': 'Transition Probability'})
     
-    ax.set_title(f'System-Level Markov Flow (Layer {l} $\\rightarrow$ {l+1})')
-    ax.set_xlabel(f'Target Physical Groups (Layer {l+1})')
-    ax.set_ylabel(f'Source Physical Groups (Layer {l})')
+    ax.set_title(f'Physical Device Flow (Layer {l} $\\rightarrow$ {l+1})\n(Based on Local Hub Assumption)')
+    ax.set_xlabel(f'Target Physical GPUs (Layer {l+1})')
+    ax.set_ylabel(f'Source Physical GPUs (Layer {l})')
     
     plt.tight_layout()
-    plt.savefig(os.path.join(DIR_FIG4, f"layer_{l:02d}_to_{l+1:02d}_markov.pdf"))
+    plt.savefig(os.path.join(DIR_FIG3, f"layer_{l:02d}_to_{l+1:02d}_markov_physical.pdf"))
+    plt.close(fig)
+
+# ==========================================
+# 📊 构思四: 批量生成 Hub 挑选分数与截断图 (平滑曲线 + 自适应Y轴，不标极值)
+# ==========================================
+def plot_fig4_hub_selection(l):
+    hubs, _ = get_layer_groups(l)
+    layer_data = hub_scores_data[f"layer_{l}"]
+    sorted_experts = layer_data["hub_experts"]
+    sorted_scores = layer_data["hub_scores"]
+    
+    fig, ax = plt.subplots(figsize=(8, 4))
+    x_coords = np.arange(len(sorted_scores))
+    
+    # 1. B-spline 平滑曲线
+    spl = make_interp_spline(x_coords, sorted_scores, k=3)
+    x_smooth = np.linspace(x_coords.min(), x_coords.max(), 300)
+    y_smooth = spl(x_smooth)
+    
+    hubs_int = [int(h) for h in hubs]
+    colors = ['#c44e52' if int(exp) in hubs_int else '#4c72b0' for exp in sorted_experts]
+    
+    # 2. 绘制平滑曲线与带颜色的散点
+    ax.plot(x_smooth, y_smooth, color='gray', linestyle='-', linewidth=1.5, zorder=1, alpha=0.6)
+    ax.scatter(x_coords, sorted_scores, c=colors, s=40, edgecolor='white', linewidth=0.5, zorder=2)
+    
+    # 3. 自适应 Y 轴跨度
+    y_min, y_max = min(sorted_scores), max(sorted_scores)
+    y_margin = (y_max - y_min) * 0.1
+    ax.set_ylim(y_min - y_margin, y_max + y_margin)
+    
+    # 4. 画出 Hub 截断虚线
+    num_hubs = len(hubs_int)
+    ax.axvline(x=num_hubs - 0.5, color='gray', linestyle='--', alpha=0.8)
+    
+    # 优雅地放置截断文本
+    bbox_cutoff = dict(boxstyle="round,pad=0.3", fc="#f2f2f2", ec="gray", lw=1, alpha=0.8)
+    ax.text(num_hubs + 1, y_max - y_margin*0.5, 'Hub\nSelection\nCutoff', 
+            ha='left', va='top', color='#333333', fontsize=10, bbox=bbox_cutoff)
+    
+    ax.set_title(f'Amplified Hub Score Distribution - Layer {l}')
+    ax.set_xlabel('Expert Rank (Sorted by Hub Score)')
+    ax.set_ylabel('Amplified Hub Score')
+    ax.grid(axis='y', linestyle='--', alpha=0.5)
+    
+    import matplotlib.lines as mlines
+    legend_elements = [
+        mlines.Line2D([0], [0], marker='o', color='w', markerfacecolor='#c44e52', markersize=8, label='Selected Global Hubs'),
+        mlines.Line2D([0], [0], marker='o', color='w', markerfacecolor='#4c72b0', markersize=8, label='Specialized Experts')
+    ]
+    ax.legend(handles=legend_elements, loc='upper right')
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(DIR_FIG4, f"layer_{l:02d}_hub_scores.pdf"))
     plt.close(fig)
 
 # ==========================================
@@ -249,7 +294,7 @@ if __name__ == "__main__":
     for l in tqdm(range(num_layers), desc="Processing Layers"):
         plot_fig1_long_tail(l)
         plot_fig2_pmi_comparison(l)
-        plot_fig3_network_islands(l)
-        plot_fig4_markov_aggregated(l)
-        
-    print("\n🎉 大功告成！所有 24 层（超 90 张高清 PDF 图表）已完整生成至 ./paper_figures/motivation_all_layers 目录！")
+        plot_fig3_markov_aggregated_physical(l)
+        plot_fig4_hub_selection(l)
+
+    print("\n🎉 大功告成！所有图表已完整生成至 ./paper_figures/motivation_all_layers 目录！")

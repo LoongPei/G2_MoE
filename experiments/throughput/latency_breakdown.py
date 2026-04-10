@@ -181,7 +181,7 @@ def load_model(mode, rank, world_size):
     model.to(torch.device(f"cuda:{rank}"))
     return model
 
-def run_matrix_profiling(mode):
+def run_matrix_profiling(mode, seq_lens, global_batches, exp_name):
     dist.init_process_group(backend="nccl")
     rank = dist.get_rank()
     world_size = dist.get_world_size()
@@ -192,102 +192,119 @@ def run_matrix_profiling(mode):
     model.eval()
 
     DOMAINS = ["code", "math", "wiki"]
-    BATCH_SIZES = [1, 2, 4, 8, 16, 32]
-    SEQ_LEN = 1024
     STEPS = 10
     
     results_matrix = {}
 
     for domain in DOMAINS:
         results_matrix[domain] = {}
-        max_tokens_needed = max(BATCH_SIZES) * SEQ_LEN * (STEPS + 2) * world_size
+        
+        # 计算所需的最大 token 数量
+        max_local_bs = max(global_batches) // world_size
+        if max_local_bs == 0:
+            max_local_bs = 1
+            
+        max_tokens_needed = max_local_bs * max(seq_lens) * (STEPS + 2) * world_size
         
         if rank == 0: 
             print(f"\n=========================================\n📥 正在从本地极速加载 [{domain.upper()}] 领域语料...\n=========================================")
             
         tokens = get_domain_tokens(tokenizer, domain, max_tokens_needed)
         
-        for bs in BATCH_SIZES:
-            if rank == 0: print(f"  ➤ 测试 [Batch Size = {bs}] ...")
-            torch.cuda.empty_cache()
-            oom_detected = torch.tensor([0], dtype=torch.int, device=f"cuda:{rank}")
+        for seq_len in seq_lens:
+            results_matrix[domain][f"seq_{seq_len}"] = {}
+            if rank == 0: print(f" 👉 开始测试 Sequence Length: {seq_len}")
             
-            try:
-                for layer in model.model.layers: getattr(layer, 'mlp', layer).profiling_events.clear()
-                
-                # 预热
-                dummy_start = rank * bs * SEQ_LEN
-                dummy_input = tokens[dummy_start : dummy_start + bs * SEQ_LEN].view(bs, SEQ_LEN).to(f"cuda:{rank}")
-                with torch.no_grad():
-                    for _ in range(2): model(dummy_input)
-                torch.cuda.synchronize()
-                
-                for layer in model.model.layers: getattr(layer, 'mlp', layer).profiling_events.clear()
-
-                # 正式测速
-                base_offset = 2 * bs * SEQ_LEN * world_size
-                for i in range(STEPS):
-                    step_start = base_offset + (i * bs * SEQ_LEN * world_size)
-                    rank_start = step_start + (rank * bs * SEQ_LEN)
-                    chunk = tokens[rank_start : rank_start + bs * SEQ_LEN].view(bs, SEQ_LEN).to(f"cuda:{rank}")
-                    with torch.no_grad():
-                        model(chunk)
-
-                torch.cuda.synchronize()
-                
-            except RuntimeError as e:
-                if "out of memory" in str(e).lower():
-                    oom_detected[0] = 1
-                    torch.cuda.empty_cache()
-                else:
-                    raise e 
-
-            dist.all_reduce(oom_detected, op=dist.ReduceOp.MAX)
-
-            if oom_detected.item() > 0:
-                if rank == 0:
-                    print(f"  ⚠️ [Batch Size = {bs}] 触发显存极限 (OOM)！已启动全局熔断，跳入下一领域。")
+            for gb in global_batches:
+                bs = gb // world_size
+                if bs == 0:
+                    if rank == 0: print(f"  ⚠️ Global batch {gb} 小于 GPU 数量 {world_size}，跳过该配置。")
+                    continue
+                    
+                if rank == 0: print(f"  ➤ 测试 [Global Batch = {gb} | Local Batch = {bs} | Seq = {seq_len}] ...")
                 torch.cuda.empty_cache()
-                break
+                oom_detected = torch.tensor([0], dtype=torch.int, device=f"cuda:{rank}")
+                
+                try:
+                    for layer in model.model.layers: getattr(layer, 'mlp', layer).profiling_events.clear()
+                    
+                    # 预热
+                    dummy_start = rank * bs * seq_len
+                    dummy_input = tokens[dummy_start : dummy_start + bs * seq_len].view(bs, seq_len).to(f"cuda:{rank}")
+                    with torch.no_grad():
+                        for _ in range(2): model(dummy_input)
+                    torch.cuda.synchronize()
+                    
+                    for layer in model.model.layers: getattr(layer, 'mlp', layer).profiling_events.clear()
 
-            dist.barrier() 
-            
-            total_ms_sum, comp_ms_sum, comm_ms_sum = 0.0, 0.0, 0.0
-            total_layers_tracked = 0
-            for layer in model.model.layers:
-                mlp = getattr(layer, 'mlp', layer)
-                for evts in mlp.profiling_events:
-                    total_ms_sum += evts["total"][0].elapsed_time(evts["total"][1])
-                    comp_ms_sum += sum(s.elapsed_time(e) for s, e in evts["comp"])
-                    comm_ms_sum += sum(s.elapsed_time(e) for s, e in evts["comm"])
-                    total_layers_tracked += 1
+                    # 正式测速
+                    base_offset = 2 * bs * seq_len * world_size
+                    for i in range(STEPS):
+                        step_start = base_offset + (i * bs * seq_len * world_size)
+                        rank_start = step_start + (rank * bs * seq_len)
+                        chunk = tokens[rank_start : rank_start + bs * seq_len].view(bs, seq_len).to(f"cuda:{rank}")
+                        with torch.no_grad():
+                            model(chunk)
 
-            avg_total = total_ms_sum / total_layers_tracked
-            avg_comp = comp_ms_sum / total_layers_tracked
-            avg_comm = comm_ms_sum / total_layers_tracked
-            avg_route = avg_total - avg_comp - avg_comm
-            
-            results_matrix[domain][f"bs_{bs}"] = {
-                "compute_ms": round(avg_comp, 3),
-                "comm_ms": round(avg_comm, 3),
-                "route_ms": round(avg_route, 3),
-                "total_ms": round(avg_total, 3)
-            }
+                    torch.cuda.synchronize()
+                    
+                except RuntimeError as e:
+                    if "out of memory" in str(e).lower():
+                        oom_detected[0] = 1
+                        torch.cuda.empty_cache()
+                    else:
+                        raise e 
 
-            if rank == 0:
-                out_dir = EVAL_RESULTS_DIR / "latency_breakdown"
-                out_dir.mkdir(parents=True, exist_ok=True)
-                out_file = out_dir / f"matrix_{mode}_breakdown.json"
-                with open(out_file, "w") as f:
-                    json.dump(results_matrix, f, indent=2)
+                dist.all_reduce(oom_detected, op=dist.ReduceOp.MAX)
+
+                if oom_detected.item() > 0:
+                    if rank == 0:
+                        print(f"  ⚠️ [Global Batch = {gb} | Seq = {seq_len}] 触发显存极限 (OOM)！已启动全局熔断，跳入下一配置。")
+                    torch.cuda.empty_cache()
+                    break
+
+                dist.barrier() 
+                
+                total_ms_sum, comp_ms_sum, comm_ms_sum = 0.0, 0.0, 0.0
+                total_layers_tracked = 0
+                for layer in model.model.layers:
+                    mlp = getattr(layer, 'mlp', layer)
+                    for evts in mlp.profiling_events:
+                        total_ms_sum += evts["total"][0].elapsed_time(evts["total"][1])
+                        comp_ms_sum += sum(s.elapsed_time(e) for s, e in evts["comp"])
+                        comm_ms_sum += sum(s.elapsed_time(e) for s, e in evts["comm"])
+                        total_layers_tracked += 1
+
+                avg_total = total_ms_sum / total_layers_tracked
+                avg_comp = comp_ms_sum / total_layers_tracked
+                avg_comm = comm_ms_sum / total_layers_tracked
+                avg_route = avg_total - avg_comp - avg_comm
+                
+                results_matrix[domain][f"seq_{seq_len}"][f"global_bs_{gb}"] = {
+                    "compute_ms": round(avg_comp, 3),
+                    "comm_ms": round(avg_comm, 3),
+                    "route_ms": round(avg_route, 3),
+                    "total_ms": round(avg_total, 3)
+                }
+
+                if rank == 0:
+                    # 使用 exp_name 创建对应的子文件夹
+                    out_dir = EVAL_RESULTS_DIR / "latency_breakdown" / exp_name
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    out_file = out_dir / f"matrix_{mode}_breakdown.json"
+                    with open(out_file, "w", encoding="utf-8") as f:
+                        json.dump(results_matrix, f, indent=2)
             
     dist.destroy_process_group()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", type=str, choices=["standard_ep", "ours"], required=True)
+    parser.add_argument("--seq_lens", type=int, nargs='+', default=[1024], help="List of Sequence Lengths to test. e.g. --seq_lens 512 1024 2048")
+    parser.add_argument("--global_batches", type=int, nargs='+', default=[8, 16, 32, 64], help="List of Global Batch Sizes to test. e.g. --global_batches 16 32")
+    parser.add_argument("--exp_name", type=str, default="default_exp", help="Name of the experiment, used as subfolder for saving results.")
     args = parser.parse_args()
     
     os.environ["NCCL_P2P_DISABLE"] = "1"
     os.environ["NCCL_IB_DISABLE"] = "1"
-    run_matrix_profiling(args.mode)
+    run_matrix_profiling(args.mode, args.seq_lens, args.global_batches, args.exp_name)

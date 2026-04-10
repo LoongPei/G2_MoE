@@ -72,7 +72,7 @@ def run_micro_traffic_test(model, tokenizer, args, rank, world_size):
 
     # 落盘保存 (依赖 config.py 中的全局路径)
     if rank == 0:
-        output_dir = EVAL_RESULTS_DIR / "comprehensive_ablation_1"
+        output_dir = EVAL_RESULTS_DIR / "comprehensive_ablation"
         output_dir.mkdir(parents=True, exist_ok=True)
         
         out_name = f"{args.mode}_{args.domain}_H{args.hub_size}_K{args.top_k}_B{args.batch_size}_S{args.seq_len}.json"

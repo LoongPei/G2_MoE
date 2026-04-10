@@ -8,7 +8,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from g2moe.config import EVAL_RESULTS_DIR, FIGURES_DIR, MATRIX_DIR
+from g2moe.config import FIGURES_DIR, MATRIX_DIR
+from g2moe.config import OUTPUT_DIR as GLOBAL_OUTPUT_DIR
 
 # ==========================================
 # 1. 全局配置
@@ -151,7 +152,7 @@ if __name__ == "__main__":
     print("🚀 开始生成系统性能评估图表...")
 
     # 任务 1: Batch Size 扩展性测试图表
-    dir_batch = EVAL_RESULTS_DIR / "throughput" / "batchsize"
+    dir_batch = GLOBAL_OUTPUT_DIR / "throughput" / "batchsize"
     if os.path.exists(dir_batch):
         print("\n[1/2] 处理 Batch Size 扩展性数据...")
         data_batch = load_data(dir_batch, x_axis_key="global_batch")
@@ -159,7 +160,7 @@ if __name__ == "__main__":
         plot_traffic_reduction(data_batch, "Global Batch Size", "Traffic Reduction (Fixed Seq=1024)", "batch_scaling")
 
     # 任务 2: Sequence Length 扩展性测试图表
-    dir_seqlen = EVAL_RESULTS_DIR / "throughput" / "seqlen"
+    dir_seqlen = GLOBAL_OUTPUT_DIR / "throughput" / "seqlen"
     if os.path.exists(dir_seqlen):
         print("\n[2/2] 处理 Sequence Length 扩展性数据...")
         data_seqlen = load_data(dir_seqlen, x_axis_key="seq_len")

@@ -18,16 +18,17 @@ from lm_eval.utils import make_table
 from g2moe.config import DEFAULT_MODEL_PATH, EVAL_RESULTS_DIR, HF_DATASETS_CACHE
 from g2moe.core.factory import build_g2moe_model
 
-# 强制离线评测与指定本地离线缓存库
+# 可以选择强制离线评测与指定本地离线缓存库，也可在线下载
 os.environ["HF_DATASETS_CACHE"] = str(HF_DATASETS_CACHE)
-os.environ["HF_DATASETS_OFFLINE"] = "1"
+# os.environ["HF_DATASETS_OFFLINE"] = "1"
 os.environ["NCCL_P2P_DISABLE"] = "1"
 os.environ["NCCL_IB_DISABLE"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # 默认配置
-# TASKS = ["race", "sciq", "rte", "boolq", "copa", "wsc", "piqa"]
-TASKS = ["rte"]  # 按需修改
+TASKS = ["race", "sciq", "rte", "boolq", "copa", "wsc", "piqa"]
+# TASKS = ["rte", "sciq"]  # 按需修改
+# TASKS = ["piqa"] 
 BATCH_SIZE = 2
 TEST_LIMIT = None  
 

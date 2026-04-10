@@ -20,7 +20,10 @@ os.environ["NCCL_P2P_DISABLE"] = "1"
 os.environ["NCCL_IB_DISABLE"] = "1"
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
 
-TASKS = ["sciq", "rte"] # 按需修改
+TASKS = ["race", "sciq", "rte", "boolq", "copa", "wsc", "piqa"]
+# TASKS = ["sciq", "rte"] # 按需修改
+# TASKS = ["race", "boolq"]
+# TASKS = ["piqa"]
 BATCH_SIZE = 2
 TEST_LIMIT = None 
 

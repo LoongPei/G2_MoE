@@ -85,10 +85,33 @@ Evaluate the system-level throughput and perform a micro-level latency breakdown
 torchrun --nproc_per_node=4 experiments/throughput/throughput_benchmark.py --mode ours --global_batch 16 --seq_len 1024
 ```
 
-**Micro-Latency Breakdown:**
 ```bash
-torchrun --nproc_per_node=4 experiments/throughput/latency_breakdown.py --mode ours
+torchrun --nproc_per_node=4 experiments/throughput/throughput_benchmark.py --mode standard_ep --global_batch 16 --seq_len 1024
 ```
+
+```bash
+python experiments/throughput/throughput_benchmark.py --mode baseline --global_batch 16 --seq_len 1024
+```
+```bash
+# 实验脚本
+. /opt/data/xie/projects/G2_MoE/scripts/run_benchmark.sh
+```
+
+You can run multiple experiments to compare the performance of various methods by modifying the batch_size and seqlen parameters. 
+
+Note: When mode=baseline, the program's startup command is different from the other two modes.
+当mode=ours或mode=standard_ep时，global_batch必须是4的倍数
+
+**Micro-Latency Breakdown:**
+
+```bash
+torchrun --nproc_per_node=4 experiments/throughput/latency_breakdown.py --mode ours --seq_lens 1024 2048 4096 8192 --global_batches 4 --exp_name batchsize
+```
+```bash
+# 实验脚本
+. /opt/data/xie/projects/G2_MoE/scripts/run_latence.sh
+```
+
 
 ## 🧪 Step 4: Comprehensive Ablation & Downstream Tasks
 
